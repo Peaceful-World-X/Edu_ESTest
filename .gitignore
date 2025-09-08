@@ -1,0 +1,33 @@
+# 编译中间文件和临时文件
+**/*.bak
+**/*.ddk
+**/*.edk
+**/*.lst
+**/*.lnp
+**/*.mpf
+**/*.mpj
+**/*.obj
+**/*.omf
+**/*.plg
+**/*.rpt
+**/*.tmp
+**/*.__i
+**/*.crf
+**/*.o
+**/*.d
+**/*.axf
+**/*.tra
+**/*.dep
+**/*.iex
+**/*.htm
+**/*.sct
+**/*.map
+**/*.dbgconf
+**/*.Administrator
+**/*.uvguix.Peaceful_World_TOP
+
+# 特定日志文件
+JLinkLog.txt
+
+# 自定义
+ESTest_A1/MutaTest/Answer
