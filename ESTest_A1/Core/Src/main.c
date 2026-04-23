@@ -92,7 +92,6 @@ _Bool Flag_Hum=0;       //设备正常否
 _Bool Flag_Tem=0;       //设备正常否
 _Bool Flag_Lig=0;       //设备正常否
 
-__IO uint32_t Tick_sys[10];  // 初始化时长;自检时长;采集三个时长
 __IO uint32_t Tick_LCD;
 __IO uint32_t Tick_KEY;
 
@@ -103,10 +102,6 @@ uint8_t LED=0;          //LED状态  0-灭 1-500ms闪烁 2-100ms闪烁
 _Bool Flag_filter=0;    //是否滤波
 uint8_t EEPROM_write[1]={0xAA};
 uint8_t EEPROM_read[1]={0};
-
-#define total_time   1000   // 总时间（基于定时器的周期）
-uint16_t idle_time=0;       // 累计 CPU 空闲时间
-float_t cpu_usage;
 
 //#define USART_REC_LEN   200             //定义最大接收字节数 200
 //uint8_t USART_RX_BUF[USART_REC_LEN];    //接收缓冲,最大USART_REC_LEN个字节
@@ -139,7 +134,6 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-  Tick_sys[0] = HAL_GetTick();                  // 初始化开始------------------------------------------
   MX_SPI1_Init();
   LCD_Init();
   LCD_Fill(0,0,LCD_W,LCD_H,WHITE);
@@ -170,11 +164,9 @@ int main(void)
   BH1750_Init();
   EEPROM_Init();
   DHT11_Init();
-  Tick_sys[0] = HAL_GetTick() - Tick_sys[0];    // 初始化完成-----------------------------------------
   LCD_ShowString(0 ,18*1,(u8*)"System Init OK!",RED,WHITE,16,0);
   
   LCD_ShowString(0 ,18*2,(u8*)"Mod Selftest...",BLACK,WHITE,16,0);
-  Tick_sys[1] = HAL_GetTick();                  // 模块自检开始-----------------------------------------
   Write_24c(EEPROM_write, 10, 1);
   HAL_Delay(50);
   Read_24c(EEPROM_read, 10, 1);
@@ -220,7 +212,6 @@ int main(void)
     LCD_ShowString(12*8 ,18*5,(u8*)"USER",WHITE,RED,16,0);
   }
 
-  Tick_sys[1] = HAL_GetTick() - Tick_sys[1];    // 模块自检完成-----------------------------------------
   LCD_ShowString(0 ,18*7,(u8*)"Selftest OK!",RED,WHITE,16,0);
   HAL_Delay(1500);
   
@@ -297,14 +288,7 @@ int main(void)
             LCD_ShowString(8*0 ,0,(u8*)str,RED,WHITE,16,0);
             (Flag_filter==1)?sprintf(str,"F:Yes"):sprintf(str,"F:No ");
             LCD_ShowString(8*10 ,0,(u8*)str,RED,WHITE,16,0);
-            sprintf(str,"T:%2d-%2d-%2d",Tick_sys[0], Tick_sys[1], Tick_sys[5]);
-            LCD_ShowString(0 ,18*1,(u8*)str,RED,WHITE,16,0);
-            sprintf(str,"T:%2d-%2d-%2d",Tick_sys[2], Tick_sys[3], Tick_sys[4]);
-            LCD_ShowString(0 ,18*2,(u8*)str,RED,WHITE,16,0);
-            
-            sprintf(str,"CPU:%05.2f%%",cpu_usage);
-            LCD_ShowString(0 ,18*3,(u8*)str,RED,WHITE,16,0);
-            
+                        
             if(Flag_Hum) sprintf(str,"H:%4.1f%%", Hum);
             else        {sprintf(str,"H:Error"); Hum=0;}
             LCD_ShowString(0  ,18*5,(u8*)str,BLUE,WHITE,16,0);
@@ -331,7 +315,6 @@ int main(void)
         
         sprintf(str,"H:%4.1f%% T:%5.2fC L:%dLx\r\n",Hum,Tem,Lig);
         HAL_UART_Transmit(&huart1, (uint8_t *)str, strlen(str), 50);
-        Tick_sys[5] = HAL_GetTick() - startTime;
     }
 //    if(USART_RX_STA & 0x8000){
 //        USART_RX_STA=0;
@@ -423,14 +406,13 @@ uint8_t keyboard_scan(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if(htim == &htim4){         //1ms循环
-        idle_time++;
+
     }
     if(htim == &htim3){         //100ms循环
         if(LED==2)  HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);  //翻转LED灯的状态
         if(++Tick_300ms == 3){  //300ms循环
             Tick_300ms = 0;
             
-            Tick_sys[2] = HAL_GetTick();
             if(Flag_Hum){
                 DHT11_Read_Data(&Hum_t);
                 Hum = Hum_t;
@@ -438,9 +420,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                     Hum = MAF(&Hum_Data, Hum_t);
                 }   
             }
-            Tick_sys[2] = HAL_GetTick() - Tick_sys[2]; 
             
-            Tick_sys[3] = HAL_GetTick();
             if(Flag_Tem){
                 Tem = ds18b20_read()/16.0;
                 if(Flag_filter){
@@ -448,16 +428,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                     Tem = Tem_Data.x;
                 }  
             }
-            Tick_sys[3] = HAL_GetTick() - Tick_sys[3]; 
             
-            Tick_sys[4] = HAL_GetTick();
             if(Flag_Lig){
                 Lig = GY30_Read_Data();
                 if(Flag_filter){
                     Lig = MDF(&Lig_Data, Lig);
                 } 
             }
-            Tick_sys[4] = HAL_GetTick() - Tick_sys[4];
 
             if(!(Flag_Lig&&Flag_Tem&&Flag_Hum))     LED = 1;
             else if(Hum>70 || Lig>1000 || Tem>27)   LED = 2;
@@ -468,8 +445,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         if(LED==1)  HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);  //翻转LED灯的状态
         if(++Tick_1s == 2){     //1s循环
             Tick_1s = 0;
-            cpu_usage = 100 - (idle_time * 100.0 / total_time);   // 计算 CPU 占用率
-            idle_time = 0;
         }
     }
 }
