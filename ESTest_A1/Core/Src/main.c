@@ -95,8 +95,9 @@ _Bool Flag_Lig=0;       //设备正常否
 __IO uint32_t Tick_sys[10];  // 初始化时长;自检时长;采集三个时长
 __IO uint32_t Tick_LCD;
 __IO uint32_t Tick_KEY;
+__IO uint32_t Tick_UART;
 
-char str[50];    //缓存字符串
+char str[96];    //缓存字符串
 uint8_t key_val, key_down=0, key_old;
 uint8_t Tick_1s=0, Tick_300ms=0;
 uint8_t LED=0;          //LED状态  0-灭 1-500ms闪烁 2-100ms闪烁
@@ -147,6 +148,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  Tick_sys[0] = HAL_GetTick();                  // 初始化开始------------------------------------------
   MX_SPI1_Init();
   LCD_Init();
   LCD_Fill(0,0,LCD_W,LCD_H,WHITE);
@@ -177,10 +179,11 @@ int main(void)
   BH1750_Init();
   EEPROM_Init();
   DHT11_Init();
+  Tick_sys[0] = HAL_GetTick() - Tick_sys[0];    // 初始化完成-----------------------------------------
   LCD_ShowString(0 ,18*1,(u8*)"System Init OK!",RED,WHITE,16,0);
   
   LCD_ShowString(0 ,18*2,(u8*)"Mod Selftest...",BLACK,WHITE,16,0);
-  HAL_Delay(3);
+  Tick_sys[1] = HAL_GetTick();                  // 模块自检开始-----------------------------------------
   Write_24c(EEPROM_write, 10, 1);
   HAL_Delay(50);
   Read_24c(EEPROM_read, 10, 1);
@@ -226,8 +229,10 @@ int main(void)
     LCD_ShowString(12*8 ,18*5,(u8*)"USER",WHITE,RED,16,0);
   }
 
-  HAL_Delay(3);
+  Tick_sys[1] = HAL_GetTick() - Tick_sys[1];    // 模块自检完成-----------------------------------------
   LCD_ShowString(0 ,18*7,(u8*)"Selftest OK!",RED,WHITE,16,0);
+    sprintf(str,"Boot Time -> Init:%lums Selftest:%lums\r\n", Tick_sys[0], Tick_sys[1]);
+    UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
   HAL_Delay(1500);
   
   /* USER CODE END 2 */
@@ -238,7 +243,7 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim2);        // 500ms定时器 
   HAL_TIM_Base_Start_IT(&htim3);        // 100ms定时器
   HAL_TIM_Base_Start_IT(&htim4);        // 1ms定时器
-  Tick_LCD = Tick_KEY = HAL_GetTick();
+    Tick_LCD = Tick_KEY = Tick_UART = HAL_GetTick();
   LCD_Fill(0,0,LCD_W,LCD_H,WHITE);
   
   while (1)
@@ -303,7 +308,14 @@ int main(void)
             LCD_ShowString(8*0 ,0,(u8*)str,RED,WHITE,16,0);
             (Flag_filter==1)?sprintf(str,"F:Yes"):sprintf(str,"F:No ");
             LCD_ShowString(8*10 ,0,(u8*)str,RED,WHITE,16,0);
-                        
+            sprintf(str,"T:%2d-%2d-%2d",Tick_sys[0], Tick_sys[1], Tick_sys[5]);
+            LCD_ShowString(0 ,18*1,(u8*)str,RED,WHITE,16,0);
+            sprintf(str,"T:%2d-%2d-%2d",Tick_sys[2], Tick_sys[3], Tick_sys[4]);
+            LCD_ShowString(0 ,18*2,(u8*)str,RED,WHITE,16,0);
+            
+            sprintf(str,"CPU:%05.2f%%",cpu_usage);
+            LCD_ShowString(0 ,18*3,(u8*)str,RED,WHITE,16,0);
+            
             if(Flag_Hum) sprintf(str,"H:%4.1f%%", Hum);
             else        {sprintf(str,"H:Error"); Hum=0;}
             LCD_ShowString(0  ,18*5,(u8*)str,BLUE,WHITE,16,0);
@@ -327,11 +339,44 @@ int main(void)
         else if(Lig<1000)   LCD_Fill(8*9, 18*6,LCD_W,80,WHITE);
         else if(Lig<10000)  LCD_Fill(8*10,18*6,LCD_W,80,WHITE);
         LCD_ShowString(0  ,18*6,(u8*)str,BLUE,WHITE,16,0);
-        
-        sprintf(str,"H:%4.1f%% T:%5.2fC L:%dLx\r\n",Hum,Tem,Lig);
+
+        Tick_sys[5] = HAL_GetTick() - startTime;
+    }
+
+    if(HAL_GetTick()-Tick_UART > 500){
+        Tick_UART = HAL_GetTick();
+        sprintf(str,"H:%4.1f%% T:%5.2fC L:%dLx F:%d Ctrl:%lums CPU:%05.2f%%\r\n",
+            Hum, Tem, Lig, Flag_filter, Tick_sys[5], cpu_usage);
         UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
     }
    if(USART_RX_STA & 0x8000){
+       _Bool *pFlag = NULL;
+       char sensor = 0;
+       char value = 0;
+
+       if ((USART_RX_BUF[1] == '=') && (USART_RX_BUF[3] == '\0') &&
+           ((USART_RX_BUF[2] == '0') || (USART_RX_BUF[2] == '1'))) {
+           sensor = (char)USART_RX_BUF[0];
+           value = (char)USART_RX_BUF[2];
+
+           if (sensor == 'H') pFlag = &Flag_Hum;
+           else if (sensor == 'T') pFlag = &Flag_Tem;
+           else if (sensor == 'L') pFlag = &Flag_Lig;
+           else if (sensor == 'F') pFlag = &Flag_filter;
+
+           if (pFlag != NULL) {
+               *pFlag = (value == '1') ? 1 : 0;
+               sprintf(str, "CMD OK: %c=%c\r\n", sensor, value);
+               UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
+           } else {
+               sprintf(str, "CMD ERR: use H/T/L/F=0/1\r\n");
+               UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
+           }
+       } else {
+           sprintf(str, "CMD ERR: use H/T/L/F=0/1\r\n");
+           UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
+       }
+
        USART_RX_STA=0;
        memset(USART_RX_BUF, 0, sizeof(USART_RX_BUF));
    }
@@ -428,6 +473,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         if(++Tick_300ms == 3){  //300ms循环
             Tick_300ms = 0;
             
+            Tick_sys[2] = HAL_GetTick();
             if(Flag_Hum){
                 DHT11_Read_Data(&Hum_t);
                 Hum = Hum_t;
@@ -435,21 +481,26 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                     Hum = MAF(&Hum_Data, Hum_t);
                 }   
             }
+            Tick_sys[2] = HAL_GetTick() - Tick_sys[2]; 
             
+            Tick_sys[3] = HAL_GetTick();
             if(Flag_Tem){
                 Tem = ds18b20_read()/16.0;
                 if(Flag_filter){
                     KLF(&Tem_Data, Tem);
                     Tem = Tem_Data.x;
                 }  
-            } 
+            }
+            Tick_sys[3] = HAL_GetTick() - Tick_sys[3]; 
             
+            Tick_sys[4] = HAL_GetTick();
             if(Flag_Lig){
                 Lig = GY30_Read_Data();
                 if(Flag_filter){
                     Lig = MDF(&Lig_Data, Lig);
                 } 
             }
+            Tick_sys[4] = HAL_GetTick() - Tick_sys[4];
 
             if(!(Flag_Lig&&Flag_Tem&&Flag_Hum))     LED = 1;
             else if(Hum>70 || Lig>1000 || Tem>27)   LED = 2;
@@ -460,6 +511,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         if(LED==1)  HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);  //翻转LED灯的状态
         if(++Tick_1s == 2){     //1s循环
             Tick_1s = 0;
+            cpu_usage = 100 - (idle_time * 100.0 / total_time);   // 计算 CPU 占用率
             idle_time = 0;
         }
     }
