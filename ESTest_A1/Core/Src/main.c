@@ -108,11 +108,19 @@ uint8_t EEPROM_read[1]={0};
 uint16_t idle_time=0;       // 累计 CPU 空闲时间
 float_t cpu_usage;
 
-//#define USART_REC_LEN   200             //定义最大接收字节数 200
-//uint8_t USART_RX_BUF[USART_REC_LEN];    //接收缓冲,最大USART_REC_LEN个字节
-//uint8_t re;                             //串口接收字符
-//uint16_t USART_RX_STA=0;                //接收状态标记
+#define USART_REC_LEN   200             //定义最大接收字节数 200
+uint8_t USART_RX_BUF[USART_REC_LEN];    //接收缓冲,最大USART_REC_LEN个字节
+uint8_t re;                             //串口接收字符
+uint16_t USART_RX_STA=0;                //接收状态标记
 uint8_t num_test[1];
+
+#define UART1_TX_BUF_SIZE 512
+static uint8_t uart1_tx_buf[UART1_TX_BUF_SIZE];
+static volatile uint16_t uart1_tx_head = 0;
+static volatile uint16_t uart1_tx_tail = 0;
+static volatile uint8_t uart1_tx_busy = 0;
+
+static void UART1_Send(const uint8_t *data, uint16_t len);
 
 /* USER CODE END 0 */
 
@@ -162,9 +170,9 @@ int main(void)
   MDF_Init(&Lig_Data);
   KLF_init(&Tem_Data, 25, 1.0, 0.9, 0.1, 1.0, 1.0);
 
-//  HAL_UART_Receive_IT(&huart1, (uint8_t *)(&re), 1);
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)(&re), 1);
   sprintf(str,"串口连接成功！\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t *)str, strlen(str), 15);
+    UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
   DS18B20_Init();
   BH1750_Init();
   EEPROM_Init();
@@ -321,13 +329,13 @@ int main(void)
         LCD_ShowString(0  ,18*6,(u8*)str,BLUE,WHITE,16,0);
         
         sprintf(str,"H:%4.1f%% T:%5.2fC L:%dLx\r\n",Hum,Tem,Lig);
-        HAL_UART_Transmit(&huart1, (uint8_t *)str, strlen(str), 50);
+        UART1_Send((const uint8_t *)str, (uint16_t)strlen(str));
     }
-//    if(USART_RX_STA & 0x8000){
-//        USART_RX_STA=0;
-//        memset(USART_RX_BUF, 0, sizeof(USART_RX_BUF));
-//    }
-//    __WFI();
+   if(USART_RX_STA & 0x8000){
+       USART_RX_STA=0;
+       memset(USART_RX_BUF, 0, sizeof(USART_RX_BUF));
+   }
+   __WFI();
   }
   /* USER CODE END 3 */
 }
@@ -460,23 +468,123 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //bit15，	接收完成标志
 //bit14，	接收到0x0d 回车\r是把光标置于本行行首 换行\n是把光标置于下一行的同一列
 //bit13~0，	接收到的有效字节数目
-//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-//{      
-//    if((USART_RX_STA & 0x8000)==0){             //接收未完成
-//        if(USART_RX_STA & 0x4000){              //接收到了\r
-//            if(re==0x0a) USART_RX_STA|=0x8000;  //又接收到了\n 接收完成了！
-//            else USART_RX_STA=0;                //接收错误,重新开始
-//        }else{	
-//            if(re==0x0d) USART_RX_STA|=0x4000;  //接收到了\r
-//            else{
-//                USART_RX_BUF[USART_RX_STA&0X3FFF]=re ;//保存数据
-//                USART_RX_STA++;
-//                if(USART_RX_STA>(USART_REC_LEN-1)) USART_RX_STA=0;//接收数据溢出,重新开始接收	  
-//                }
-//            }
-//    }
-//    HAL_UART_Receive_IT(&huart1, (uint8_t *)&re, 1);
-//}
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{      
+   if((USART_RX_STA & 0x8000)==0){             //接收未完成
+       if(USART_RX_STA & 0x4000){              //接收到了\r
+           if(re==0x0a) USART_RX_STA|=0x8000;  //又接收到了\n 接收完成了！
+           else USART_RX_STA=0;                //接收错误,重新开始
+       }else{	
+           if(re==0x0d) USART_RX_STA|=0x4000;  //接收到了\r
+           else{
+               USART_RX_BUF[USART_RX_STA&0X3FFF]=re ;//保存数据
+               USART_RX_STA++;
+               if(USART_RX_STA>(USART_REC_LEN-1)) USART_RX_STA=0;//接收数据溢出,重新开始接收	  
+               }
+           }
+   }
+   HAL_UART_Receive_IT(&huart1, (uint8_t *)&re, 1);
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    uint8_t need_start = 0;
+    uint16_t tx_len = 0;
+    uint16_t tx_tail = 0;
+
+    if (huart != &huart1) {
+        return;
+    }
+
+    __disable_irq();
+    uart1_tx_tail = (uart1_tx_tail + huart->TxXferSize) % UART1_TX_BUF_SIZE;
+    if (uart1_tx_head != uart1_tx_tail) {
+        tx_tail = uart1_tx_tail;
+        if (uart1_tx_head > uart1_tx_tail) {
+            tx_len = uart1_tx_head - uart1_tx_tail;
+        } else {
+            tx_len = UART1_TX_BUF_SIZE - uart1_tx_tail;
+        }
+        need_start = 1;
+    } else {
+        uart1_tx_busy = 0;
+    }
+    __enable_irq();
+
+    if (need_start) {
+        if (HAL_UART_Transmit_IT(&huart1, &uart1_tx_buf[tx_tail], tx_len) != HAL_OK) {
+            __disable_irq();
+            uart1_tx_busy = 0;
+            __enable_irq();
+        }
+    }
+}
+
+static void UART1_Send(const uint8_t *data, uint16_t len)
+{
+    uint16_t used;
+    uint16_t free_space;
+    uint16_t first_chunk;
+    uint8_t need_start = 0;
+    uint16_t tx_len = 0;
+    uint16_t tx_tail = 0;
+
+    if ((data == NULL) || (len == 0)) {
+        return;
+    }
+
+    __disable_irq();
+    used = (uart1_tx_head >= uart1_tx_tail) ?
+           (uart1_tx_head - uart1_tx_tail) :
+           (UART1_TX_BUF_SIZE - (uart1_tx_tail - uart1_tx_head));
+    free_space = (UART1_TX_BUF_SIZE - 1U) - used;
+    if (len > free_space) {
+        len = free_space;
+    }
+
+    if (len > 0U) {
+        first_chunk = UART1_TX_BUF_SIZE - uart1_tx_head;
+        if (first_chunk > len) {
+            first_chunk = len;
+        }
+        memcpy(&uart1_tx_buf[uart1_tx_head], data, first_chunk);
+        uart1_tx_head = (uart1_tx_head + first_chunk) % UART1_TX_BUF_SIZE;
+
+        if (len > first_chunk) {
+            memcpy(&uart1_tx_buf[uart1_tx_head], data + first_chunk, len - first_chunk);
+            uart1_tx_head = (uart1_tx_head + (len - first_chunk)) % UART1_TX_BUF_SIZE;
+        }
+    }
+
+    if ((!uart1_tx_busy) && (uart1_tx_head != uart1_tx_tail)) {
+        uart1_tx_busy = 1;
+        tx_tail = uart1_tx_tail;
+        if (uart1_tx_head > uart1_tx_tail) {
+            tx_len = uart1_tx_head - uart1_tx_tail;
+        } else {
+            tx_len = UART1_TX_BUF_SIZE - uart1_tx_tail;
+        }
+        need_start = 1;
+    }
+    __enable_irq();
+
+    if (need_start) {
+        if (HAL_UART_Transmit_IT(&huart1, &uart1_tx_buf[tx_tail], tx_len) != HAL_OK) {
+            __disable_irq();
+            uart1_tx_busy = 0;
+            __enable_irq();
+        }
+    }
+}
+
+int fputc(int ch, FILE *f)
+{
+    uint8_t c = (uint8_t)ch;
+    (void)f;
+    UART1_Send(&c, 1);
+    return ch;
+}
+
 
 
 /* USER CODE END 4 */
