@@ -3,7 +3,7 @@
 STM32F103C8 主流高性能系列，Arm Cortex-M3 MCU，具有64KB Flash，20KB SRAM，72MHz CPU，
 
       光强 Lig 中值滤波         0~65535 lx
-      湿度 Hum 移动平均滤波     5%RH—95%RH
+      湿度 Hum 移动平均滤波     5%RH―95%RH
       温度 Tem 卡尔曼滤波       －10～＋85℃
       
       Program Size: Code=18640 RO-data=9100 RW-data=60 ZI-data=1740  
@@ -92,6 +92,7 @@ _Bool Flag_Hum=0;       //设备正常否
 _Bool Flag_Tem=0;       //设备正常否
 _Bool Flag_Lig=0;       //设备正常否
 
+__IO uint32_t Tick_sys[10];  // 初始化时长;自检时长;采集三个时长
 __IO uint32_t Tick_LCD;
 __IO uint32_t Tick_KEY;
 
@@ -102,6 +103,10 @@ uint8_t LED=0;          //LED状态  0-灭 1-500ms闪烁 2-100ms闪烁
 _Bool Flag_filter=0;    //是否滤波
 uint8_t EEPROM_write[1]={0xAA};
 uint8_t EEPROM_read[1]={0};
+
+#define total_time   1000   // 总时间（基于定时器的周期）
+uint16_t idle_time=0;       // 累计 CPU 空闲时间
+float_t cpu_usage;
 
 //#define USART_REC_LEN   200             //定义最大接收字节数 200
 //uint8_t USART_RX_BUF[USART_REC_LEN];    //接收缓冲,最大USART_REC_LEN个字节
@@ -167,6 +172,7 @@ int main(void)
   LCD_ShowString(0 ,18*1,(u8*)"System Init OK!",RED,WHITE,16,0);
   
   LCD_ShowString(0 ,18*2,(u8*)"Mod Selftest...",BLACK,WHITE,16,0);
+  HAL_Delay(3);
   Write_24c(EEPROM_write, 10, 1);
   HAL_Delay(50);
   Read_24c(EEPROM_read, 10, 1);
@@ -212,6 +218,7 @@ int main(void)
     LCD_ShowString(12*8 ,18*5,(u8*)"USER",WHITE,RED,16,0);
   }
 
+  HAL_Delay(3);
   LCD_ShowString(0 ,18*7,(u8*)"Selftest OK!",RED,WHITE,16,0);
   HAL_Delay(1500);
   
@@ -406,7 +413,7 @@ uint8_t keyboard_scan(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if(htim == &htim4){         //1ms循环
-
+        idle_time++;
     }
     if(htim == &htim3){         //100ms循环
         if(LED==2)  HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);  //翻转LED灯的状态
@@ -427,7 +434,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                     KLF(&Tem_Data, Tem);
                     Tem = Tem_Data.x;
                 }  
-            }
+            } 
             
             if(Flag_Lig){
                 Lig = GY30_Read_Data();
@@ -445,6 +452,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         if(LED==1)  HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);  //翻转LED灯的状态
         if(++Tick_1s == 2){     //1s循环
             Tick_1s = 0;
+            idle_time = 0;
         }
     }
 }
